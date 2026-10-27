@@ -18,6 +18,7 @@ import requests
 import secrets
 import string
 import re
+import base64
 
 # Load environment variables
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
@@ -303,20 +304,49 @@ def generate_password(length: int = 16) -> str:
     alphabet = string.ascii_letters + string.digits
     return ''.join(secrets.choice(alphabet) for _ in range(length))
 
-async def setup_ssh_access(container_name: str, node_id: int) -> str:
+async def setup_ssh_access(container_name: str, node_id: int, user_id: str, vps_count: int, config_str: str) -> str:
     password = generate_password()
+    
+    # Custom Welcome MOTD
+    motd_script = f"""#!/bin/bash
+clear
+echo -e "\\e[1;36m"
+echo "  ███████╗ █████╗ ██╗    ██╗     ██╗██╗   ██╗███████╗██████╗ "
+echo "  ██╔════╝██╔══██╗██║    ██║     ██║██║   ██║██╔════╝╚════██╗"
+echo "  █████╗  ███████║██║    ██║     ██║██║   ██║█████╗   █████╔╝"
+echo "  ██╔══╝  ██╔══██║██║    ██║     ██║╚██╗ ██╔╝██╔══╝   ╚═══██╗"
+echo "  ██║     ██║  ██║██║    ███████╗██║ ╚████╔╝ ███████╗██████╔╝"
+echo "  ╚═╝     ╚═╝  ╚═╝╚═╝    ╚══════╝╚═╝  ╚═══╝  ╚══════╝╚═════╝ "
+echo -e "\\e[0m"
+echo -e "\\e[1;32mWelcome {{$USER}} to FaiLive2 Cloud!\\e[0m"
+echo "------------------------------------------------------------"
+echo -e "\\e[1;33mIP Address:\\e[0m $(hostname -I | awk '{{print $1}}')"
+echo -e "\\e[1;33mVPS Name:  \\e[0m {container_name}"
+echo -e "\\e[1;33mConfig:    \\e[0m {config_str}"
+echo -e "\\e[1;33mOS:        \\e[0m $(lsb_release -d | cut -f2)"
+echo "------------------------------------------------------------"
+echo -e "\\e[1;36m• Root Access: Enabled"
+echo -e "• Support: t.me/FaiLive2"
+echo -e "• Thank you for choosing FaiLive2 Cloud!\\e[0m"
+echo ""
+"""
+    b64_motd = base64.b64encode(motd_script.encode()).decode()
+    
     commands = [
         "DEBIAN_FRONTEND=noninteractive apt-get update -y",
-        "DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server",
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server lsb-release",
         f"echo 'root:{password}' | chpasswd",
         "printf 'PermitRootLogin yes\\nPasswordAuthentication yes\\n\\n' | cat - /etc/ssh/sshd_config > /tmp/sshd_config.new && mv /tmp/sshd_config.new /etc/ssh/sshd_config",
         "mkdir -p /run/sshd",
+        f"echo '{b64_motd}' | base64 -d > /etc/profile.d/failive2_welcome.sh",
+        "chmod +x /etc/profile.d/failive2_welcome.sh",
+        f"echo 'export PS1=\"\\[\\e[1;31m\\]root@FaiLive2-{user_id}-{vps_count}\\[\\e[0m\\]:\\[\\e[1;34m\\]~# \\[\\e[0m\\]\"' >> /root/.bashrc",
         "systemctl enable ssh 2>/dev/null || systemctl enable sshd 2>/dev/null || true",
         "systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || service sshd restart 2>/dev/null || true"
     ]
     for cmd in commands:
         try: await execute_lxc(container_name, f"exec {container_name} -- bash -c \"{cmd}\"", node_id=node_id, timeout=180)
-        except Exception: pass
+        except Exception as e: logger.error(f"SSH setup error: {e}")
     return password
 
 PINGGY_LOG_PATH = "/root/.pinggy_tunnel.log"
@@ -356,15 +386,15 @@ async def get_container_uptime(container_name: str, node_id: Optional[int] = Non
 
 # ------------------- Telegram Handlers -------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"🌟 <b>{BOT_NAME} VPS Manager</b>\n\nUse /help to see all commands.\nYour Telegram ID: <code>{update.effective_user.id}</code>", parse_mode="HTML")
+    await update.message.reply_text(f"🌟 <b>{BOT_NAME} VPS Manager</b>\n\nUse !help to see all commands.\nYour Telegram ID: <code>{update.effective_user.id}</code>", parse_mode="HTML")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id); is_admin_user = is_admin(user_id)
-    text = f"<b>🌟 {BOT_NAME} Command List</b>\n\n<b>👤 User Commands</b>\n/start - Start the bot\n/help - Show this menu\n/myvps - List your VPS\n/manage - Open VPS management menu\n"
+    text = f"<b>🌟 {BOT_NAME} Command List</b>\n\n<b>👤 User Commands</b>\n!start - Start the bot\n!help - Show this menu\n!myvps - List your VPS\n!manage - Open VPS management menu\n"
     if is_admin_user:
-        text += "\n<b>🛡️ Admin Commands</b>\n/create &lt;ram&gt; &lt;cpu&gt; &lt;disk&gt; &lt;user_id&gt; - Create VPS\n/list-all - List all VPS\n/userinfo &lt;user_id&gt; - User info\n/delete-vps &lt;user_id&gt; &lt;vps_number&gt; - Delete VPS\n/status - System status\n"
+        text += "\n<b>🛡️ Admin Commands</b>\n!create &lt;ram&gt; &lt;cpu&gt; &lt;disk&gt; &lt;user_id&gt; - Create VPS\n!list-all - List all VPS\n!userinfo &lt;user_id&gt; - User info\n!delete-vps &lt;user_id&gt; &lt;vps_number&gt; - Delete VPS\n!status - System status\n"
     if is_main_admin(user_id):
-        text += "\n<b>👑 Main Admin Commands</b>\n/admin-add &lt;user_id&gt; - Add admin\n/admin-remove &lt;user_id&gt; - Remove admin\n/admin-list - List admins\n"
+        text += "\n<b>👑 Main Admin Commands</b>\n!admin-add &lt;user_id&gt; - Add admin\n!admin-remove &lt;user_id&gt; - Remove admin\n!admin-list - List admins\n"
     await update.message.reply_text(text, parse_mode="HTML")
 
 async def my_vps(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -419,7 +449,7 @@ async def create_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(user_id): await update.message.reply_text("❌ Admin only."); return
     try:
         args = context.args
-        if len(args) < 4: await update.message.reply_text("Usage: /create <ram_gb> <cpu_cores> <disk_gb> <user_id>"); return
+        if len(args) < 4: await update.message.reply_text("Usage: !create <ram_gb> <cpu_cores> <disk_gb> <user_id>"); return
         ram = int(args[0]); cpu = int(args[1]); disk = int(args[2]); target_user = str(args[3])
     except ValueError: await update.message.reply_text("❌ Invalid arguments."); return
     nodes = get_nodes(); keyboard = []
@@ -443,6 +473,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⏳ Creating VPS, please wait...")
         if target_user not in vps_data: vps_data[target_user] = []
         vps_count = len(vps_data[target_user]) + 1; container_name = f"{BOT_NAME.lower()}-vps-{target_user}-{vps_count}"; ram_mb = ram * 1024
+        config_str = f"{ram}GB RAM / {cpu} CPU / {disk}GB Disk"
         try:
             await execute_lxc(container_name, f"init {os_version} {container_name} -s {DEFAULT_STORAGE_POOL}", node_id=node_id)
             await execute_lxc(container_name, f"config set {container_name} limits.memory {ram_mb}MB", node_id=node_id)
@@ -450,8 +481,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await execute_lxc(container_name, f"config device set {container_name} root size={disk}GB", node_id=node_id)
             await apply_lxc_config(container_name, node_id); await safe_start_container(container_name, node_id)
             await apply_internal_permissions(container_name, node_id)
-            root_password = await setup_ssh_access(container_name, node_id); pinggy_address = await establish_pinggy_tunnel(container_name, node_id)
-            config_str = f"{ram}GB RAM / {cpu} CPU / {disk}GB Disk"
+            
+            root_password = await setup_ssh_access(container_name, node_id, target_user, vps_count, config_str)
+            pinggy_address = await establish_pinggy_tunnel(container_name, node_id)
+            
             vps_info = {
                 "container_name": container_name, "node_id": node_id, "ram": f"{ram}GB", "cpu": str(cpu), "storage": f"{disk}GB",
                 "config": config_str, "os_version": os_version, "status": "running", "suspended": False, "whitelisted": False,
@@ -459,16 +492,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "pinggy_address": pinggy_address, "id": None
             }
             vps_data[target_user].append(vps_info); save_vps_data()
+            
+            # Group Message
             text = f"✅ VPS Created Successfully!\n\n<b>VPS:</b> <code>{container_name}</code>\n<b>Config:</b> {config_str}\n<b>OS:</b> {os_version}\n<b>Password:</b> <code>{root_password}</code>\n"
             if pinggy_address: tunnel_host, tunnel_port = pinggy_address.split(":"); text += f"<b>SSH:</b> <code>ssh root@{tunnel_host} -p {tunnel_port}</code>\n"
             await query.edit_message_text(text, parse_mode="HTML")
+            
+            # DM Message
             try:
                 user_msg = f"🎉 <b>VPS Created!</b>\n\nYour VPS has been successfully deployed by an admin!\n\n<b>VPS ID:</b> #{vps_count}\n<b>Container:</b> <code>{container_name}</code>\n<b>Configuration:</b> {config_str}\n<b>Status:</b> Running\n<b>OS:</b> {os_version}\n\n"
                 if pinggy_address:
                     tunnel_host, tunnel_port = pinggy_address.split(":")
                     user_msg += f"🔑 <b>SSH Login:</b>\nHost: <code>{tunnel_host}</code>\nPort: <code>{tunnel_port}</code>\nUser: <code>root</code>\nPassword: <code>{root_password}</code>\n\n<code>ssh root@{tunnel_host} -p {tunnel_port}</code>\n"
-                else: user_msg += f"🔑 <b>Root Password:</b> <code>{root_password}</code>\n⚠️ SSH tunnel setup failed — use /manage → 🔌 Reconnect Tunnel to try again.\n"
-                user_msg += f"\n<b>Management:</b> Use /manage to start/stop/reinstall your VPS\n\n<b>Important Notes:</b>\n• Full root access via SSH\n• Docker-ready\n• Change your root password after first login"
+                else: user_msg += f"🔑 <b>Root Password:</b> <code>{root_password}</code>\n⚠️ SSH tunnel setup failed — use !manage → 🔌 Reconnect Tunnel to try again.\n"
+                user_msg += f"\n<b>Management:</b> Use !manage to start/stop/reinstall your VPS\n\n<b>Important Notes:</b>\n• Full root access via SSH\n• Docker-ready\n• Change your root password after first login"
                 await context.bot.send_message(chat_id=int(target_user), text=user_msg, parse_mode="HTML")
             except Exception as e: logger.warning(f"Failed to DM user {target_user}: {e}")
         except Exception as e: await query.edit_message_text(f"❌ Creation Failed: {str(e)}")
@@ -504,7 +541,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await execute_lxc(container_name, f"config device set {container_name} root size={disk}GB", node_id=node_id)
                 await apply_lxc_config(container_name, node_id); await safe_start_container(container_name, node_id)
                 await apply_internal_permissions(container_name, node_id)
-                root_password = await setup_ssh_access(container_name, node_id); pinggy_address = await establish_pinggy_tunnel(container_name, node_id)
+                
+                config_str = f"{ram}GB RAM / {cpu} CPU / {disk}GB Disk"
+                root_password = await setup_ssh_access(container_name, node_id, user_id, index+1, config_str)
+                pinggy_address = await establish_pinggy_tunnel(container_name, node_id)
                 vps['status'] = 'running'; vps['os_version'] = os_version; vps['root_password'] = root_password; vps['pinggy_address'] = pinggy_address
                 save_vps_data()
                 await query.edit_message_text(f"✅ VPS <code>{container_name}</code> reinstalled with {os_version}.", parse_mode="HTML")
@@ -545,10 +585,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [[InlineKeyboardButton("✅ Confirm Delete", callback_data=f"confirm_delete_{index}")], [InlineKeyboardButton("❌ Cancel", callback_data="cancel_delete")]]
             await query.edit_message_text(f"⚠️ Are you sure you want to delete <code>{container_name}</code>?\nThis cannot be undone!", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
         elif action == "confirm_delete":
-            try: await execute_lxc(container_name, f"delete {container_name} --force", node_id=node_id)
-            except: pass
+            await query.edit_message_text("⏳ Deleting VPS, please wait...")
+            try:
+                # Fixed: Force delete then remove from DB
+                await execute_lxc(container_name, f"delete {container_name} --force", node_id=node_id)
+            except Exception as e:
+                logger.error(f"LXC delete error: {e}")
+            
             conn = get_db(); cur = conn.cursor(); cur.execute("DELETE FROM vps WHERE container_name = ?", (container_name,)); cur.execute("DELETE FROM port_forwards WHERE vps_container = ?", (container_name,)); conn.commit(); conn.close()
-            del vps_data[user_id][index]; save_vps_data(); await query.edit_message_text(f"✅ VPS <code>{container_name}</code> deleted.", parse_mode="HTML")
+            
+            if index < len(vps_data[user_id]): del vps_data[user_id][index]
+            save_vps_data(); await query.edit_message_text(f"✅ VPS <code>{container_name}</code> deleted successfully.", parse_mode="HTML")
         elif action == "cancel_delete": await show_vps_manage_menu(update, context, index, from_callback=True)
         return
 
@@ -566,7 +613,7 @@ async def list_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if not is_admin(user_id): await update.message.reply_text("❌ Admin only."); return
-    if not context.args: await update.message.reply_text("Usage: /userinfo <user_id>"); return
+    if not context.args: await update.message.reply_text("Usage: !userinfo <user_id>"); return
     target_id = str(context.args[0]); vps_list = vps_data.get(target_id, [])
     text = f"<b>👤 User Info</b>\n\n<b>User ID:</b> <code>{target_id}</code>\n<b>Admin:</b> {'✅ Yes' if is_admin(target_id) else '❌ No'}\n<b>VPS Count:</b> {len(vps_list)}\n\n"
     for i, vps in enumerate(vps_list): text += f"{i+1}. <code>{vps['container_name']}</code> - {vps.get('status', 'unknown')}\n"
@@ -584,7 +631,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def delete_vps_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if not is_admin(user_id): await update.message.reply_text("❌ Admin only."); return
-    if len(context.args) < 2: await update.message.reply_text("Usage: /delete-vps <user_id> <vps_number>"); return
+    if len(context.args) < 2: await update.message.reply_text("Usage: !delete-vps <user_id> <vps_number>"); return
     target_id = str(context.args[0])
     try: vps_number = int(context.args[1])
     except ValueError: await update.message.reply_text("❌ Invalid VPS number."); return
@@ -600,7 +647,7 @@ async def delete_vps_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def admin_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if not is_main_admin(user_id): await update.message.reply_text("❌ Main admin only."); return
-    if not context.args: await update.message.reply_text("Usage: /admin-add <user_id>"); return
+    if not context.args: await update.message.reply_text("Usage: !admin-add <user_id>"); return
     target_id = str(context.args[0])
     if target_id in admin_data["admins"]: await update.message.reply_text("Already an admin."); return
     admin_data["admins"].append(target_id); save_admin_data(); await update.message.reply_text(f"✅ <code>{target_id}</code> added as admin.", parse_mode="HTML")
@@ -608,7 +655,7 @@ async def admin_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if not is_main_admin(user_id): await update.message.reply_text("❌ Main admin only."); return
-    if not context.args: await update.message.reply_text("Usage: /admin-remove <user_id>"); return
+    if not context.args: await update.message.reply_text("Usage: !admin-remove <user_id>"); return
     target_id = str(context.args[0])
     if target_id not in admin_data["admins"]: await update.message.reply_text("Not an admin."); return
     admin_data["admins"].remove(target_id); save_admin_data(); await update.message.reply_text(f"✅ <code>{target_id}</code> removed from admins.", parse_mode="HTML")
@@ -623,9 +670,36 @@ async def admin_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(text, parse_mode="HTML")
 
 # ------------------- Main -------------------
+async def custom_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles commands starting with '!' since Telegram natively uses '/'."""
+    text = update.message.text
+    if not text or not text.startswith("!"): return
+    
+    # Extract command and args
+    parts = text[1:].split()
+    if not parts: return
+    command = parts[0].lower()
+    context.args = parts[1:]
+    
+    # Route to correct handler
+    if command == "start": await start(update, context)
+    elif command == "help": await help_command(update, context)
+    elif command == "myvps": await my_vps(update, context)
+    elif command == "manage": await manage_command(update, context)
+    elif command == "create": await create_command(update, context)
+    elif command == "list-all": await list_all_command(update, context)
+    elif command == "userinfo": await userinfo_command(update, context)
+    elif command == "status": await status_command(update, context)
+    elif command == "delete-vps": await delete_vps_command(update, context)
+    elif command == "admin-add": await admin_add_command(update, context)
+    elif command == "admin-remove": await admin_remove_command(update, context)
+    elif command == "admin-list": await admin_list_command(update, context)
+
 def main():
     if not TELEGRAM_BOT_TOKEN: logger.error("No Telegram bot token found!"); return
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # Standard / commands
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("myvps", my_vps))
@@ -638,7 +712,12 @@ def main():
     application.add_handler(CommandHandler("admin-add", admin_add_command))
     application.add_handler(CommandHandler("admin-remove", admin_remove_command))
     application.add_handler(CommandHandler("admin-list", admin_list_command))
+    
+    # Custom ! prefix handler
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, custom_command_handler))
+    
     application.add_handler(CallbackQueryHandler(handle_callback))
+    
     logger.info(f"{BOT_NAME} Telegram Bot is starting...")
     application.run_polling()
 
